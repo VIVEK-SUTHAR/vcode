@@ -4,8 +4,8 @@
 
 // Get the Config Path
 //
-char* getConfigPath() {
-  //Can modify this to Extent ~/.config.json
+char *getConfigPath() {
+  // Can modify this to Extent ~/.config.json
   const char *config_json = "config.json";
 
   return config_json;

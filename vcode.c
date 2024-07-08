@@ -1,12 +1,15 @@
 /** includes **/
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/_types/_ssize_t.h>
 #include <sys/_types/_va_list.h>
+#include <sys/fcntl.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <time.h>
@@ -20,6 +23,7 @@
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 enum editorKey {
+  BACKSPACE = 127,
   ARROW_LEFT = 1000,
   ARROW_RIGHT,
   ARROW_UP,
@@ -30,6 +34,7 @@ enum editorKey {
   PAGE_UP,
   PAGE_DOWN
 };
+
 /** data **/
 
 typedef struct erow {
@@ -59,13 +64,14 @@ struct editorConfig {
 
 struct editorConfig E;
 
-void editorUpdateNumDigits() {
-  E.numDigits = 1;
+void updateEditotLineNumDigits() {
   int numRows = E.numrows;
   while (numRows >= 10) {
     E.numDigits++;
     numRows /= 10;
   }
+  E.screenCols -= E.numDigits;
+  E.coloffset -= E.numDigits;
 }
 /** terminal **/
 void die(const char *s) {
@@ -263,7 +269,62 @@ void editorAppendRow(char *s, size_t len) {
   E.numrows++;
 }
 
+void editorRowInsertChar(erow *row, int at, int c) {
+  // Conside The Space We added for Rendering Line Numbers
+  // Ex If I am at row 10 and want to insert at col 100
+  // And the file has 10 Lines so Rendering Space for line digits is 2
+  // initial at = 10; But that contains that 2 line digit also
+  // So we substract it,so becomes 8 and we insert it 8
+  at = at - E.numDigits;
+  // Check for not go below 0 or if its last char if its just assign max size
+  if (at < 0 || at > row->size)
+    at = row->size;
+  // reallocate memory to row chars ,2 Extra for new char and null terminator
+  // '\0'
+  row->chars = realloc(row->chars, row->size + 2);
+  memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+  row->size++;
+  row->chars[at] = c;
+  ediorUpdateRow(row);
+}
+/** Editor operations*/
+void editorInsertChar(int c) {
+  if (E.cy == E.numrows) {
+    editorAppendRow("", 0);
+  }
+  editorRowInsertChar(&E.row[E.cy], E.cx, c);
+  E.cx++;
+}
+int countDigits(int number) {
+  int count = 0;
+  if (number == 0) {
+    return 1;
+  }
+  while (number != 0) {
+    number /= 10;
+    count++;
+  }
+  return count;
+}
 /** FILE / IO**/
+
+char *editorRowsToString(int *bufferlen) {
+  int totelen = 0;
+  int j = 0;
+  for (j = 0; j < E.numrows; j++)
+    totelen += E.row[j].size + 1;
+  *bufferlen = totelen;
+  char *buffer = malloc(totelen);
+  char *p = buffer;
+  for (j = 0; j < E.numrows; j++) {
+    memcpy(p, E.row[j].chars, E.row[j].size);
+    p += E.row[j].size;
+    *p = '\n';
+    p++;
+  }
+  return buffer;
+}
+
 void editorOpen(char *filename) {
   free(E.filename);
   E.filename = strdup(filename);
@@ -273,14 +334,30 @@ void editorOpen(char *filename) {
   char *line = NULL;
   size_t linecap = 0;
   ssize_t linelen;
+  int line_count = 0;
   while ((linelen = getline(&line, &linecap, fp)) != -1) {
     while (linelen > 0 &&
            (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
       linelen--;
     editorAppendRow(line, linelen);
+    line_count++;
   }
+  int digits = countDigits(line_count);
+  E.numDigits = digits;
   free(line);
   fclose(fp);
+}
+
+void editorSave() {
+  if (E.filename == NULL)
+    return;
+  int len;
+  char *buf = editorRowsToString(&len);
+  int fileDescrptior = open(E.filename, O_RDWR | O_CREAT, 0644);
+  ftruncate(fileDescrptior, len);
+  write(fileDescrptior, buf, len);
+  close(fileDescrptior);
+  free(buf);
 }
 
 /** append buffer **/
@@ -372,7 +449,7 @@ void editorDrawStatusBar(struct abuf *ab) {
   char status[80], rstatus[80];
   int len = snprintf(status, sizeof(status), "%.20s - %d lines",
                      E.filename ? E.filename : "[No name]", E.numrows);
-  int rlen = snprintf(rstatus, sizeof(rstatus), "%d:%d", E.cy + 1, E.numrows);
+  int rlen = snprintf(rstatus, sizeof(rstatus), "%d:%d", E.cy + 1, E.cx);
 
   if (len > E.screenCols)
     len = E.screenCols;
@@ -403,6 +480,7 @@ void editorDrawStatusMessageBar(struct abuf *ab) {
 }
 
 void editorRefreshScreen() {
+  // updateEditotLineNumDigits();
   editorScroll();
   struct abuf ab = ABUF_INIT;
 
@@ -418,36 +496,45 @@ void editorRefreshScreen() {
            (E.rx - E.coloffset) + 1);
   append_bufferAppend(&ab, buf, strlen(buf));
 
-  // append_bufferAppend(&ab, "\x1b[H", 3);
   append_bufferAppend(&ab, "\x1b[?25h", 6);
   write(STDOUT_FILENO, ab.b, ab.len);
   append_bufferFree(&ab);
 }
 
 void editorSetStatusMessage(const char *fmt, ...) {
-
   va_list ap;
   va_start(ap, fmt);
   vsnprintf(E.status_message, sizeof(E.status_message), fmt, ap);
   va_end(ap);
   E.status_message_time = time(NULL);
 }
+
+void editorOnWidownResize() {
+  if (getWindowSize(&E.screenRows, &E.screenCols) == -1) {
+    die("OnWindowSize Change");
+  }
+  E.screenRows -= 2;
+  editorRefreshScreen();
+}
 /** input **/
 void editorMoveCursor(int key) {
   erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
   switch (key) {
   case ARROW_LEFT:
-    if (E.cx > E.numDigits + 1) {
+    if (E.cx > E.numDigits) {
       E.cx--;
     } else if (E.cy > 0) {
       E.cy--;
-      E.cx = E.row[E.cy].size + E.numDigits;
+      row = &E.row[E.cy];
+      E.cx = row->size + E.numDigits;
     }
     break;
   case ARROW_RIGHT:
     if (row && E.cx < row->size + E.numDigits) {
       E.cx++;
     } else if (row && E.cx == row->size + E.numDigits) {
+      if (E.cy == E.numrows - 1)
+        break;
       E.cy++;
       E.cx = E.numDigits;
     }
@@ -458,7 +545,7 @@ void editorMoveCursor(int key) {
 
     break;
   case ARROW_DOWN:
-    if (E.cy < E.numrows)
+    if (E.cy < E.numrows - 1)
       E.cy++;
     break;
   }
@@ -475,10 +562,20 @@ void editorProcessKeyMap() {
   int c = editorReadKey();
 
   switch (c) {
+  case '\r':
+    break;
   case CTRL_KEY('q'):
     write(STDOUT_FILENO, "\x1b[2J", 4);
     write(STDOUT_FILENO, "\x1b[H", 3);
     exit(0);
+    break;
+  case CTRL_KEY('s'):
+    editorSave();
+    break;
+
+  case BACKSPACE:
+  case CTRL_KEY('h'):
+  case DELETE_KEY:
     break;
   case PAGE_UP:
   case PAGE_DOWN: {
@@ -506,6 +603,12 @@ void editorProcessKeyMap() {
   case ARROW_LEFT:
     editorMoveCursor(c);
     break;
+  case CTRL_KEY('l'):
+  case '\x1b':
+    break;
+  default:
+    editorInsertChar(c);
+    break;
   }
 }
 void initEditor() {
@@ -520,22 +623,18 @@ void initEditor() {
   E.status_message[0] = '\0';
   E.status_message_time = 0;
 
-  int numRows = E.numrows;
-  while (numRows >= 10) {
-    E.numDigits++;
-    numRows /= 10;
-  }
   if (getWindowSize(&E.screenRows, &E.screenCols) == -1)
     die("getWindowSize");
   E.screenRows -= 2;
 }
+
 /** init **/
 int main(int argc, char *argv[]) {
+  signal(SIGWINCH, editorOnWidownResize);
   enabelRawMode();
   initEditor();
   if (argc >= 2) {
     editorOpen(argv[1]);
-    editorUpdateNumDigits();
   }
   editorSetStatusMessage("HELP: Ctrl-Q = quit");
   while (1) {
