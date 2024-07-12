@@ -41,7 +41,7 @@ enum editorKey {
   PAGE_UP,
   PAGE_DOWN
 };
-
+enum editorHighlight { HL_NORMAL = 0, HL_NUMBER, HL_MATCH };
 /** data **/
 
 typedef struct erow {
@@ -49,6 +49,7 @@ typedef struct erow {
   int rsize;
   char *chars;
   char *render;
+  unsigned char *hl;
 } erow;
 
 struct termios original_termios;
@@ -222,6 +223,43 @@ int getWindowSize(int *rows, int *cols) {
     return 0;
   }
 }
+
+/* Syntex Highlight  */
+int is_separator(int c) {
+  return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];", c) != NULL;
+}
+void editorUpdateSyntax(erow *row) {
+  row->hl = realloc(row->hl, row->rsize);
+  memset(row->hl, HL_NORMAL, row->rsize);
+
+  // To Keep track of whether last character was separator or not;
+  int prev_sep = 1;
+
+  int i = 0;
+  while (i < row->rsize) {
+    char c = row->render[i];
+    unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
+    if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
+        c == '.' && prev_hl == HL_NUMBER) {
+      row->hl[i] = HL_NUMBER;
+      i++;
+      prev_sep = 0;
+      continue;
+    }
+    prev_sep = is_separator(c);
+    i++;
+  }
+}
+int editorSyntaxToColor(int hl) {
+  switch (hl) {
+  case HL_NUMBER:
+    return 31;
+  case HL_MATCH:
+    return 34;
+  default:
+    return 37;
+  }
+}
 /*Row Operations   */
 
 int editorRowCxtoRx(erow *row, int cx) {
@@ -274,6 +312,7 @@ void ediorUpdateRow(erow *row) {
   }
   row->render[index] = '\0';
   row->rsize = index;
+  editorUpdateSyntax(row);
 }
 void editorInsertRow(int at, char *s, size_t len) {
 
@@ -290,6 +329,7 @@ void editorInsertRow(int at, char *s, size_t len) {
 
   E.row[at].rsize = 0;
   E.row[at].render = NULL;
+  E.row[at].hl = NULL;
   ediorUpdateRow(&E.row[at]);
 
   E.numrows++;
@@ -298,6 +338,7 @@ void editorInsertRow(int at, char *s, size_t len) {
 void editorFreeRow(erow *row) {
   free(row->render);
   free(row->chars);
+  free(row->hl);
 }
 void editorDelRow(int at) {
   if (at < 0 || at >= E.numrows)
@@ -503,6 +544,16 @@ void editorSave() {
 void editorFindCallBack(char *query, int key) {
   static int last_match = -1;
   static int direction = 1;
+
+  static int saved_hl_line;
+  static char *saved_hl = NULL;
+
+  if (saved_hl) {
+    memcpy(E.row[saved_hl_line].hl, saved_hl, E.row[saved_hl_line].rsize);
+    free(saved_hl);
+    saved_hl = NULL;
+  }
+
   if (key == '\r' || key == '\x1b') {
     last_match = -1;
     direction = 1;
@@ -531,8 +582,15 @@ void editorFindCallBack(char *query, int key) {
     if (match) {
       last_match = current;
       E.cy = current;
+      // Consider Rendering Line no digit also
       E.cx = editorRowRxToCx(row, match - row->render) + E.numDigits;
       E.rowoffset = E.numrows;
+
+      // Restore the Saved highlight
+      saved_hl_line = current;
+      saved_hl = malloc(row->rsize);
+      memcpy(saved_hl, row->hl, row->rsize);
+      memset(&row->hl[match - row->render], HL_MATCH, strlen(query));
       break;
     }
   }
@@ -629,7 +687,30 @@ void editorDrawRows(struct abuf *ab) {
         len = 0;
       if (len > E.screenCols)
         len = E.screenCols;
-      append_bufferAppend(ab, &E.row[filerow].render[E.coloffset], len);
+      char *c = &E.row[filerow].render[E.coloffset];
+      unsigned char *hl = &E.row[filerow].hl[E.coloffset];
+      int current_color = -1;
+
+      int j;
+      for (j = 0; j < len; j++) {
+        if (hl[j] == HL_NORMAL) {
+          if (current_color != -1) {
+            append_bufferAppend(ab, "\x1b[39m", 5);
+            current_color = -1;
+          }
+          append_bufferAppend(ab, &c[j], 1);
+        } else {
+          int color = editorSyntaxToColor(hl[j]);
+          if (color != current_color) {
+            current_color = color;
+            char buf[16];
+            int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+            append_bufferAppend(ab, buf, clen);
+          }
+          append_bufferAppend(ab, &c[j], 1);
+        }
+      }
+      append_bufferAppend(ab, "\x1b[39m", 5);
     }
 
     append_bufferAppend(ab, "\x1b[K", 3);
