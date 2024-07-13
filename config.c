@@ -1,12 +1,10 @@
-#include "file.h"
+#include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
 
 // Get the Config Path
-//
 char *getConfigPath() {
-  // Can modify this to Extent ~/.config.json
-  const char *config_json = "config.json";
+  const char *config_json = "jconfig.json";
 
   return config_json;
 }

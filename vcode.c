@@ -41,15 +41,39 @@ enum editorKey {
   PAGE_UP,
   PAGE_DOWN
 };
-enum editorHighlight { HL_NORMAL = 0, HL_NUMBER, HL_MATCH };
+enum editorHighlight {
+  HL_NORMAL = 0,
+  HL_COMMENT,
+  HL_MLCOMMENT,
+  HL_KEYWORD1,
+  HL_KEYWORD2,
+  HL_STRING,
+  HL_NUMBER,
+  HL_MATCH,
+};
+
+#define HL_HIGHLIGHT_NUMBERS (1 << 0)
+#define HL_HIGHLIGHT_STRINGS (1 << 1)
 /** data **/
 
+struct editorSyntax {
+  char *filetype;
+  char **filematch;
+  char **keywords;
+  char *single_line_comment_start;
+  char *multiline_comment_start;
+  char *multiline_comment_end;
+  int flags;
+};
+
 typedef struct erow {
+  int idx;
   int size;
   int rsize;
   char *chars;
   char *render;
   unsigned char *hl;
+  int hl_open_comment;
 } erow;
 
 struct termios original_termios;
@@ -69,10 +93,24 @@ struct editorConfig {
   int relative_line_no;
   char status_message[80];
   time_t status_message_time;
+  struct editorSyntax *syntax;
   struct termios original_termios;
 };
 
 struct editorConfig E;
+
+/*** Filetypes ***/
+char *C_HL_extensions[] = {".c", ".h", ".cpp", NULL};
+char *C_HL_keywords[] = {"switch",    "if",      "while",   "for",    "break",
+                         "continue",  "return",  "else",    "struct", "union",
+                         "typedef",   "static",  "enum",    "class",  "case",
+                         "int|",      "long|",   "double|", "float|", "char|",
+                         "unsigned|", "signed|", "void|",   NULL};
+struct editorSyntax HLDB[] = {{"c", C_HL_extensions, C_HL_keywords, "//", "/*",
+                               "*/",
+                               HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS}};
+
+#define HLDB_ENTRIED (sizeof(HLDB) / sizeof(HLDB[0]))
 
 void updateEditotLineNumDigits() {
   int numRows = E.numrows;
@@ -231,33 +269,169 @@ int is_separator(int c) {
 void editorUpdateSyntax(erow *row) {
   row->hl = realloc(row->hl, row->rsize);
   memset(row->hl, HL_NORMAL, row->rsize);
+  if (E.syntax == NULL)
+    return;
+
+  char **keywords = E.syntax->keywords;
+
+  char *scs = E.syntax->single_line_comment_start;
+  char *mcs = E.syntax->multiline_comment_start;
+  char *mce = E.syntax->multiline_comment_end;
+
+  int scslen = scs ? strlen(scs) : 0;
+  int mcslen = mcs ? strlen(mcs) : 0;
+  int mcelen = mce ? strlen(mce) : 0;
 
   // To Keep track of whether last character was separator or not;
   int prev_sep = 1;
+  // To Keep track of wheter we are in string or not
+  int in_string = 0;
+
+  // To Keep track of wheter we are in comment or not
+  int in_comment = (row->idx > 0 && E.row[row->idx - 1].hl_open_comment);
 
   int i = 0;
   while (i < row->rsize) {
     char c = row->render[i];
     unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
-    if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
-        c == '.' && prev_hl == HL_NUMBER) {
-      row->hl[i] = HL_NUMBER;
-      i++;
-      prev_sep = 0;
-      continue;
+
+    if (scslen && !in_string && !in_comment) {
+
+      if (!strncmp(&row->render[i], scs, scslen)) {
+        memset(&row->hl[i], HL_COMMENT, row->rsize - i);
+        break;
+      }
     }
+
+    if (mcslen && mcelen && !in_string) {
+      if (in_comment) {
+        row->hl[i] = HL_MLCOMMENT;
+        if (!strncmp(&row->render[i], mce, mcelen)) {
+          memset(&row->hl[i], HL_MLCOMMENT, mcelen);
+          i += mcelen;
+          in_comment = 0;
+          prev_sep = 1;
+          continue;
+        } else {
+          i++;
+          continue;
+        }
+      } else if (!strncmp(&row->render[i], mcs, mcslen)) {
+        memset(&row->hl[i], HL_MLCOMMENT, mcslen);
+        i += mcslen;
+        in_comment = 1;
+        continue;
+      }
+    }
+
+    if (E.syntax->flags & HL_HIGHLIGHT_STRINGS) {
+      if (in_string) {
+
+        row->hl[i] = HL_STRING;
+        if (c == '\\' && i + 1 < row->rsize) {
+          row->hl[i + 1] = HL_STRING;
+          i += 2;
+          continue;
+        }
+        if (c == in_string)
+          in_string = 0;
+        i++;
+        prev_sep = 1;
+        continue;
+      } else {
+        if (c == '"' || c == '\'') {
+          in_string = c;
+          row->hl[i] = HL_STRING;
+          i++;
+          continue;
+        }
+      }
+    }
+
+    if (E.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
+
+      if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
+          (c == '.' && prev_hl == HL_NUMBER)) {
+        row->hl[i] = HL_NUMBER;
+        i++;
+        prev_sep = 0;
+        continue;
+      }
+    }
+
+    if (prev_sep) {
+
+      int j = 0;
+      for (j = 0; keywords[j]; j++) {
+        int klen = strlen(keywords[j]);
+        int kw2 = keywords[j][klen - 1] == '|';
+        if (kw2)
+          klen--;
+        if (!strncmp(&row->render[i], keywords[j], klen) &&
+            is_separator(row->render[i + klen])) {
+          memset(&row->hl[i], kw2 ? HL_KEYWORD2 : HL_KEYWORD1, klen);
+          i += klen;
+          break;
+        }
+      }
+      if (keywords[j] != NULL) {
+        prev_sep = 0;
+        continue;
+      }
+    }
+
     prev_sep = is_separator(c);
     i++;
   }
+
+  int changed = (row->hl_open_comment != in_comment);
+  row->hl_open_comment = in_comment;
+  if (changed && row->idx + 1 < E.numrows)
+    editorUpdateSyntax(&E.row[row->idx + 1]);
 }
 int editorSyntaxToColor(int hl) {
   switch (hl) {
+  case HL_MLCOMMENT:
+  case HL_COMMENT:
+    return 36;
+  case HL_KEYWORD1:
+    return 33;
+  case HL_KEYWORD2:
+    return 32;
+  case HL_STRING:
+    return 35;
   case HL_NUMBER:
     return 31;
   case HL_MATCH:
     return 34;
   default:
     return 37;
+  }
+}
+
+void editorSelectSyntaxHighLight() {
+
+  E.syntax = NULL;
+  if (E.filename == NULL)
+    return;
+  char *ext = strrchr(E.filename, '.');
+
+  for (unsigned int j = 0; j < HLDB_ENTRIED; j++) {
+    struct editorSyntax *s = &HLDB[j];
+    unsigned int i = 0;
+    while (s->filematch[i]) {
+      int is_ext = (s->filematch[i][0] == '.');
+      if ((is_ext && ext && !strcmp(ext, s->filematch[i])) ||
+          (!is_ext && strstr(E.filename, s->filematch[i]))) {
+        E.syntax = s;
+        int filerow;
+        for (filerow = 0; filerow < E.numrows; filerow++) {
+          editorUpdateSyntax(&E.row[filerow]);
+        }
+        return;
+      }
+      i++;
+    }
   }
 }
 /*Row Operations   */
@@ -321,6 +495,10 @@ void editorInsertRow(int at, char *s, size_t len) {
 
   E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
   memmove(&E.row[at + 1], &E.row[at], sizeof(erow) * (E.numrows - at));
+  for (int j = 0; j <= E.numrows; j++)
+    E.row[j].idx++;
+
+  E.row[at].idx = at;
 
   E.row[at].size = len;
   E.row[at].chars = malloc(len + 1);
@@ -330,6 +508,7 @@ void editorInsertRow(int at, char *s, size_t len) {
   E.row[at].rsize = 0;
   E.row[at].render = NULL;
   E.row[at].hl = NULL;
+  E.row[at].hl_open_comment = 0;
   ediorUpdateRow(&E.row[at]);
 
   E.numrows++;
@@ -345,6 +524,8 @@ void editorDelRow(int at) {
     return;
   editorFreeRow(&E.row[at]);
   memmove(&E.row[at], &E.row[at + 1], sizeof(erow) * (E.numrows - at - 1));
+  for (int j = at; j < E.numrows - 1; j++)
+    E.row[j].idx--;
   E.numrows--;
   E.dirty++;
 }
@@ -420,7 +601,7 @@ void editorDelChar() {
     return;
   erow *row = &E.row[E.cy];
   // This means we are at the end of Line
-  if (E.cx == row->size + E.numDigits) {
+  if (E.cx == row->size) {
     if (E.cy < 0)
       return;
     E.cx = E.row[E.cy - 1].size + E.numDigits;
@@ -483,6 +664,9 @@ char *editorRowsToString(int *bufferlen) {
 void editorOpen(char *filename) {
   free(E.filename);
   E.filename = strdup(filename);
+
+  editorSelectSyntaxHighLight();
+
   FILE *fp = fopen(filename, "r");
   if (!fp)
     die("fopen");
@@ -519,6 +703,7 @@ void editorSave() {
       editorSetStatusMessage("Save aborted");
       return;
     }
+    editorSelectSyntaxHighLight();
   }
   int len;
   char *buf = editorRowsToString(&len);
@@ -693,7 +878,19 @@ void editorDrawRows(struct abuf *ab) {
 
       int j;
       for (j = 0; j < len; j++) {
-        if (hl[j] == HL_NORMAL) {
+        if (iscntrl(c[j])) {
+          char sym = (c[j <= 26] ? '@' + c[j] : '?');
+          append_bufferAppend(ab, "\x1b[7m", 4);
+          append_bufferAppend(ab, &sym, 1);
+          append_bufferAppend(ab, "\x1b[m", 3);
+
+          if (current_color != -1) {
+            char buf[16];
+            int clen = snprintf(buf, sizeof(buf), "\xab[%dm", current_color);
+            append_bufferAppend(ab, buf, clen);
+          }
+
+        } else if (hl[j] == HL_NORMAL) {
           if (current_color != -1) {
             append_bufferAppend(ab, "\x1b[39m", 5);
             current_color = -1;
@@ -726,7 +923,9 @@ void editorDrawStatusBar(struct abuf *ab) {
   int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
                      E.filename ? E.filename : "[No name]", E.numrows,
                      E.dirty ? "Modified" : "");
-  int rlen = snprintf(rstatus, sizeof(rstatus), "%d:%d", E.cy + 1, E.cx);
+  int rlen =
+      snprintf(rstatus, sizeof(rstatus), "%s %d:%d",
+               E.syntax ? E.syntax->filetype : "No filetype", E.cy + 1, E.cx);
 
   if (len > E.screenCols)
     len = E.screenCols;
@@ -954,6 +1153,7 @@ void initEditor() {
   E.filename = NULL;
   E.relative_line_no = 0;
   E.status_message[0] = '\0';
+  E.syntax = NULL;
   E.status_message_time = 0;
 
   if (getWindowSize(&E.screenRows, &E.screenCols) == -1)
