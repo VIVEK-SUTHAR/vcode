@@ -1,10 +1,5 @@
 {
-  "name":"VCode Editor",
-  "version":"0.0.1",
-  "indent":{
-    "tabs":8
-  },
-  "init":{
-  "message":"Welcome To VCode"
-  }
+  "welcome_message":"Welcome to VCode",
+  "tab_stop":8,
+  "vimmode":false
 }

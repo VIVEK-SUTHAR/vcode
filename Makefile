@@ -1,6 +1,14 @@
-vcode: vcode.c
-					$(CC) vcode.c -o vcode -Wall -Wextra -pedantic -std=c99
+CC = gcc
+CFLAGS = -Wall -Wextra -pedantic -std=c99
 
-json: file.c
-					$(CC) file.c -o file -Wall -Wextra -pedantic -std=c99
-					./file
+# Use wildcard to find all .c files in src directory
+SRCS = $(wildcard src/*.c)
+OBJS = $(SRCS:.c=.o)
+
+# Target to compile the program
+vcode: $(OBJS)
+	$(CC) $(CFLAGS) -o vcode $(OBJS)
+
+# Target to clean up object files and the executable
+clean:
+	rm -f vcode $(OBJS)
