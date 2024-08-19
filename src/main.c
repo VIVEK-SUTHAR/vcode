@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <sys/_types/_ssize_t.h>
 #include <sys/_types/_va_list.h>
 #include <sys/fcntl.h>
@@ -44,13 +45,24 @@ void editorOnWidownResize() {
   E.screenRows -= 2;
   editorRefreshScreen();
 }
-/** input **/
+void handleCrash() {
+  printf("System Crashed due to Invalid Memory access");
+  die("Segementation fault");
+}
 /** init **/
 int main(int argc, char *argv[]) {
+  // Register Event Listenrs :-
+  //  Listen for window Resize and layout changes on Screen
   signal(SIGWINCH, editorOnWidownResize);
+  // Listen for NULL handle
+  // Listen for Invalid Memory Address check
+  signal(SIGSEGV, handleCrash);
+  // Start the Process with Raw Mode
   enabelRawMode();
+  // Render initial UI and init renderer
   initEditor();
   if (argc >= 2) {
+    // Open file ,read it and parse
     editorOpen(argv[1]);
   }
   editorSetStatusMessage(

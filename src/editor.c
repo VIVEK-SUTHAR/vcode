@@ -211,7 +211,7 @@ void editorDrawRows(struct string_buffer *sb) {
         }
       }
 
-      if (E.cy == filerow && E.row[E.cy].selectCurrent == 1) {
+      if (E.row[E.cy].selectCurrent == 1) {
         string_buffer_append(sb, SELECT_END, strlen(SELECT_END));
       }
       string_buffer_append(sb, "\x1b[39m", 5);

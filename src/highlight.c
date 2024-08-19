@@ -40,13 +40,11 @@ void editorUpdateSyntax(EditorRow *row) {
     unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
 
     if (scslen && !in_string && !in_comment) {
-
       if (!strncmp(&row->render[i], scs, scslen)) {
         memset(&row->hl[i], HL_COMMENT, row->rsize - i);
         break;
       }
     }
-
     if (mcslen && mcelen && !in_string) {
       if (in_comment) {
         row->hl[i] = HL_MLCOMMENT;
@@ -70,7 +68,6 @@ void editorUpdateSyntax(EditorRow *row) {
 
     if (E.syntax->flags & HL_HIGHLIGHT_STRINGS) {
       if (in_string) {
-
         row->hl[i] = HL_STRING;
         if (c == '\\' && i + 1 < row->rsize) {
           row->hl[i + 1] = HL_STRING;
@@ -93,7 +90,6 @@ void editorUpdateSyntax(EditorRow *row) {
     }
 
     if (E.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
-
       if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
           (c == '.' && prev_hl == HL_NUMBER)) {
         row->hl[i] = HL_NUMBER;
@@ -104,7 +100,6 @@ void editorUpdateSyntax(EditorRow *row) {
     }
 
     if (prev_sep) {
-
       int j = 0;
       for (j = 0; keywords[j]; j++) {
         int klen = strlen(keywords[j]);
